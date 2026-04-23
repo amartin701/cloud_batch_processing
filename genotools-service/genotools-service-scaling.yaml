@@ -1,0 +1,20 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: genotools-service-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: genotools-service
+  minReplicaCount: 1
+  maxReplicaCount: 6
+  pollingInterval: 5           # Check every 10 seconds
+  cooldownPeriod: 240           # Scale down after 1 minute (faster for testing)
+  triggers:
+  - type: rabbitmq
+    metadata:
+      host: amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672/
+      queueName: genotools-jobs
+      queueLength: '3'
+      activationValue: '1'  
+      excludeUnacknowledged: "false" 

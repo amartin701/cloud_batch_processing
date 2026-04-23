@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genotools-service
+  labels:
+    app: genotools-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genotools-service
+  template:
+    metadata:
+      labels:
+        app: genotools-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: genotools-service
+        image: localhost:32000/genotools:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: MAX_CONCURRENT_JOBS
+          value: "2"        
+        - name: CPU_THRESHOLD
+          value: "75.0"  
+        - name: MEMORY_THRESHOLD
+          value: "75.0" 
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "1024Mi"  
+            cpu: "400m"  
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60     
+          periodSeconds: 30           
+          timeoutSeconds: 10      
+          failureThreshold: 5          
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30      
+          periodSeconds: 15           
+          timeoutSeconds: 10           
+          failureThreshold: 3         
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: genotools-shared-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: genotools-service
+  labels:
+    app: genotools-service
+spec:
+  selector:
+    app: genotools-service
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080

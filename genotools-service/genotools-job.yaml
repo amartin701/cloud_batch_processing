@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: genotools-ancestry-job
+spec:
+  template:
+    spec:
+      containers:
+      - name: genotools
+        image: localhost:32000/genotools:latest
+        imagePullPolicy: Always 
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        env:
+        - name: NUMBA_NUM_THREADS
+          value: "1"
+        - name: OMP_NUM_THREADS
+          value: "1" 
+        - name: MKL_NUM_THREADS
+          value: "1"
+      restartPolicy: Never
+  backoffLimit: 4
