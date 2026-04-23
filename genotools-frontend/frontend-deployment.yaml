@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genotools-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genotools-frontend
+  template:
+    metadata:
+      labels:
+        app: genotools-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: localhost:32000/genotools-frontend:latest
+        ports:
+        - containerPort: 5000
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: genotools-shared-storage

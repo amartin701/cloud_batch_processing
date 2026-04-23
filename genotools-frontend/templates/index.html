@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GenoTools Analysis Platform</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .form-group {
+            margin: 20px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px 10px 0;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background: #cce7ff;
+            color: #004085;
+            border: 1px solid #b3d7ff;
+        }
+        .job-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .hidden {
+            display: none;
+        }
+        .file-info {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+        .output-text {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            background-color: #000;
+            color: #fff;
+            padding: 10px;
+            border-radius: 3px;
+            margin: 10px 0;
+        }
+        hr {
+            margin: 30px 0;
+            border: none;
+            border-top: 1px solid #ddd;
+        }
+        kbd {
+            background-color: #f8f9fa;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            padding: 2px 4px;
+            font-size: 0.85em;
+            font-family: monospace;
+        }
+        #dropZone {
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        #dropZone:hover {
+            background-color: #f8f9fa;
+            border-color: #007bff;
+        }
+        .file-info strong {
+            color: #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧬 GenoTools</h1>
+
+        <hr>
+
+        <!-- File Upload Section -->
+        <div class="form-group">
+            <h2>Upload Your PLINK Files</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+
+                <div class="form-group">
+                    <label for="bedFile">.bed file (Binary genotype data):</label>
+                    <input type="file" id="bedFile" name="bed_file" accept=".bed">
+                    <div class="file-info">Select your .bed file</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="bimFile">.bim file (Variant information):</label>
+                    <input type="file" id="bimFile" name="bim_file" accept=".bim">
+                    <div class="file-info">Select your .bim file</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="famFile">.fam file (Sample information):</label>
+                    <input type="file" id="famFile" name="fam_file" accept=".fam">
+                    <div class="file-info">Select your .fam file</div>
+                </div>
+
+                <div id="fileValidation" class="file-info"></div>
+
+                <button type="submit">Upload PLINK Files & Start Analysis</button>
+            </form>
+        </div>
+
+        <!-- Status Section -->
+        <div id="statusSection" class="hidden">
+            <h2>Analysis Status</h2>
+            <div id="statusMessage"></div>
+            <div id="jobInfo" class="job-info"></div>
+            <button id="checkStatusBtn" onclick="checkJobStatus()" class="hidden">🔄 Check Status</button>
+            <button id="downloadBtn" onclick="downloadResults()" class="hidden">📥 Download Results</button>
+            
+            <!-- Output Display -->
+            <div id="outputSection" class="hidden">
+                <h3>Analysis Output:</h3>
+                <div id="output" class="output-text">Analysis output will appear here...</div>
+            </div>
+        </div>
+
+        <hr>
+
+        <div class="form-group">
+            <h2>Check existing job</h2>
+            <p>Enter a job ID to check status</p>
+
+            <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                <input type="text" id="manualJobId" placeholder="Enter Job ID"
+                    style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 5px;">
+                <button onclick="checkManualJob()">Check Status</button>
+                <button onclick="downloadManualJob()">Download</button> 
+            </div>
+
+            <div id="manualJobResult"></div>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <h2>Retrieve Previous Job</h2>
+        <p>Enter a job ID to retrieve results from the database (available for 10 minutes after completion)</p>
+    
+        <div class="form-group">
+            <label for="retrieveJobId">Job ID:</label>
+            <input type="text" id="retrieveJobId" placeholder="e.g., abc123de">
+            <button onclick="retrieveJob()">🔍 Retrieve Job</button>
+        </div>
+    
+        <div id="retrieveStatus" class="file-info"></div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let statusInterval;
+
+        function updateFileInfo() {
+            const bedFile = document.getElementById('bedFile').files[0];
+            const bimFile = document.getElementById('bimFile').files[0];
+            const famFile = document.getElementById('famFile').files[0];
+            const validationDiv = document.getElementById('fileValidation');
+    
+            let fileInfo = '';
+            let fileCount = 0;
+    
+            if (bedFile) {
+                fileInfo += `${bedFile.name}<br>`;
+                fileCount++;
+            }
+            if (bimFile) {
+                fileInfo += `${bimFile.name}<br>`;
+                fileCount++;
+            }
+            if (famFile) {
+                fileInfo += `${famFile.name}<br>`;
+                fileCount++;
+            }
+    
+            if (fileCount > 0) {
+                fileInfo = `<strong>Selected files:</strong><br>${fileInfo}`;
+            } else {
+                fileInfo = '';
+            }
+    
+            validationDiv.innerHTML = fileInfo;
+        }
+
+        // Add event listeners for file inputs (just for display)
+        document.getElementById('bedFile').addEventListener('change', updateFileInfo);
+        document.getElementById('bimFile').addEventListener('change', updateFileInfo);
+        document.getElementById('famFile').addEventListener('change', updateFileInfo);
+
+        // Simplified upload form handler
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const bedFile = document.getElementById('bedFile').files[0];
+            const bimFile = document.getElementById('bimFile').files[0];
+            const famFile = document.getElementById('famFile').files[0];
+
+            // Just check that at least one file is selected
+            if (!bedFile && !bimFile && !famFile) {
+                showStatus('error', 'Please select at least one PLINK file');
+                return;
+            }
+
+            const formData = new FormData();
+            if (bedFile) formData.append('bed_file', bedFile);
+            if (bimFile) formData.append('bim_file', bimFile);
+            if (famFile) formData.append('fam_file', famFile);
+            formData.append('analysis_type', 'qc');
+
+            const selectedFiles = [bedFile, bimFile, famFile].filter(f => f).map(f => f.name);
+            showStatus('info', `Uploading ${selectedFiles.length} file(s) and starting QC analysis...`);
+
+            fetch('/upload-files', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentJobId = data.job_id;
+                    showStatus('success', `Files uploaded! QC Analysis started with Job ID: ${data.job_id}`);
+            
+                    const jobInfo = document.getElementById('jobInfo');
+                    jobInfo.innerHTML = `
+                        <strong>Job ID:</strong> <code>${data.job_id}</code> 
+                        <button onclick="copyJobId('${data.job_id}')" style="margin-left: 10px; padding: 2px 8px; font-size: 12px;">📋 Copy</button><br>
+                        <strong>Analysis:</strong> Quality Control<br>
+                        <strong>Files:</strong> ${selectedFiles.join(', ')}
+                    `;
+            
+                    document.getElementById('checkStatusBtn').classList.remove('hidden');
+                    startStatusPolling();
+                } else {
+                    showStatus('error', `Error: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                showStatus('error', `Network error: ${error}`);
+            });
+        });
+
+        // Show status message
+        function showStatus(type, message) {
+            const statusSection = document.getElementById('statusSection');
+            const statusMessage = document.getElementById('statusMessage');
+            
+            statusSection.classList.remove('hidden');
+            statusMessage.className = `status ${type}`;
+            statusMessage.textContent = message;
+        }
+
+        // Show job information
+        function showJobInfo(jobId, analysisType, uploadedFiles = []) {
+            const jobInfo = document.getElementById('jobInfo');
+            const checkBtn = document.getElementById('checkStatusBtn');
+            
+            let filesInfo = '';
+            if (uploadedFiles && uploadedFiles.length > 0) {
+                filesInfo = `<br><strong>File:</strong> ${uploadedFiles.join(', ')}`;
+            }
+            
+            jobInfo.innerHTML = `
+                <strong>Job ID:</strong> ${jobId}<br>
+                <strong>Analysis:</strong> ${analysisType}
+                ${filesInfo}
+            `;
+            
+            checkBtn.classList.remove('hidden');
+        }
+
+        function checkJobStatus() {
+            if (!currentJobId) return;
+    
+            fetch(`/job-status/${currentJobId}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log('Job status:', data);
+        
+                // Show output if available
+                if (data.output) {
+                    document.getElementById('outputSection').classList.remove('hidden');
+                    document.getElementById('output').textContent = data.output;
+                }
+        
+                if (data.status === 'completed' && data.success) {
+                    let message = 'QC Analysis completed successfully!';
+                    if (data.output_files && data.output_files.length > 0) {
+                        message += ` Generated ${data.output_files.length} result files.`;
+                    }
+                    showStatus('success', message);
+                    document.getElementById('downloadBtn').classList.remove('hidden');
+                    clearInterval(statusInterval);
+                } else if (data.status === 'failed') {
+                    showStatus('error', `Analysis failed: ${data.error || 'Unknown error'}`);
+                    clearInterval(statusInterval);
+                } else if (data.status === 'running') {
+                    showStatus('info', 'Analysis is running...');
+                } else {
+                    showStatus('info', `Status: ${data.status || 'Queued'}`);
+                }
+            })
+            .catch(error => {
+                showStatus('error', `Error checking status: ${error}`);
+            });
+        }
+
+        function downloadResults() {
+            if (!currentJobId) return;
+    
+            showStatus('info', 'Preparing download...');
+    
+            // Create download link
+            const link = document.createElement('a');
+            link.href = `/download-results/${currentJobId}`;
+            link.download = `genotools_results_${currentJobId}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+    
+            // Update status
+            setTimeout(() => {
+                showStatus('success', 'Download started! Check your downloads folder.');
+            }, 500);
+        }
+
+        function startStatusPolling() {
+            statusInterval = setInterval(checkJobStatus, 5000); // Check every 5 seconds
+        }
+
+        function checkManualJob() {
+            const jobId = document.getElementById('manualJobId').value.trim();
+            if (!jobId) {
+                alert('Please enter a Job ID');
+                return;
+            }
+    
+            fetch(`/job-status/${jobId}`)
+            .then(response => response.json())
+            .then(data => {
+                const resultDiv = document.getElementById('manualJobResult');
+        
+                if (data.status === 'completed' && data.success) {
+                    resultDiv.innerHTML = `
+                        <div class="status success">
+                            <strong>Job Completed!</strong><br>
+                            Job ID: ${jobId}<br>
+                            Duration: ${data.duration ? data.duration.toFixed(1) + 's' : 'N/A'}<br>
+                            Files: ${data.output_files ? data.output_files.length + ' files' : 'N/A'}<br>
+                            <button onclick="downloadManualJob('${jobId}')" style="margin-top: 10px;">
+                                Download Results
+                            </button>
+                        </div>
+                    `;
+                } else if (data.status === 'running') {
+                    resultDiv.innerHTML = `
+                        <div class="status info">
+                            <strong>Job Running...</strong><br>
+                            Job ID: ${jobId}<br>
+                            Analysis: ${data.analysis_type || 'QC'}<br>
+                            Started: ${data.start_time ? new Date(data.start_time * 1000).toLocaleString() : 'N/A'}
+                        </div>
+                    `;
+                } else if (data.status === 'failed') {
+                    resultDiv.innerHTML = `
+                        <div class="status error">
+                            <strong>Job Failed</strong><br>
+                            Job ID: ${jobId}<br>
+                            Error: ${data.error || 'Unknown error'}
+                        </div>
+                    `;
+                } else if (data.error && data.error === 'Job not found') {
+                    resultDiv.innerHTML = `
+                        <div class="status error">
+                            <strong>Job Not Found</strong><br>
+                            Job ID "${jobId}" was not found. Please check the ID and try again.
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="status info">
+                            <strong>Job Status</strong><br>
+                            Job ID: ${jobId}<br>
+                            Status: ${data.status || 'Unknown'}<br>
+                            <pre>${JSON.stringify(data, null, 2)}</pre>
+                        </div>
+                    `;
+                }
+            })
+            .catch(error => {
+                document.getElementById('manualJobResult').innerHTML = `
+                    <div class="status error">
+                        <strong>Error</strong><br>
+                        Failed to check job status: ${error}
+                    </div>
+                `;
+            });
+        }
+
+        function downloadManualJob(jobId = null) {
+            const targetJobId = jobId || document.getElementById('manualJobId').value.trim();
+    
+            if (!targetJobId) {
+                alert('Please enter a Job ID');
+                return;
+            }
+    
+            // Create download link
+            const link = document.createElement('a');
+            link.href = `/download-results/${targetJobId}`;
+            link.download = `genotools_results_${targetJobId}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+    
+            // Show feedback
+            document.getElementById('manualJobResult').innerHTML = `
+                <div class="status info">
+                    Download started for job ${targetJobId}...<br>
+                    Check your downloads folder for the ZIP file.
+                </div>
+            `;
+        }
+
+        function copyJobId(jobId) {
+            navigator.clipboard.writeText(jobId).then(() => {
+                showStatus('info', 'Job ID copied to clipboard!');
+            }).catch(() => {
+                // Fallback for browsers without clipboard API
+                const textArea = document.createElement('textarea');
+                textArea.value = jobId;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                showStatus('info', 'Job ID copied to clipboard!');
+            });
+        }
+
+        // Retrieve job from database
+        function retrieveJob() {
+            const jobId = document.getElementById('retrieveJobId').value.trim();
+            
+            if (!jobId) {
+                showStatus('error', 'Please enter a job ID');
+                return;
+            }
+            
+            showStatus('info', `Searching for job ${jobId}...`);
+            
+            fetch('/retrieve-job', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ job_id: jobId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentJobId = jobId;
+                    const jobData = data.job_data;
+                    
+                    let statusMsg = `Job ${jobId} retrieved successfully!`;
+                    if (jobData.restored_from_database) {
+                        statusMsg += ' (From database)';
+                    }
+                    showStatus('success', statusMsg);
+                    
+                    // Update job info display
+                    const jobInfo = document.getElementById('jobInfo');
+                    jobInfo.innerHTML = `
+                        <strong>Job ID:</strong> <code>${jobId}</code>
+                        <button onclick="copyJobId('${jobId}')" style="margin-left: 10px; padding: 2px 8px; font-size: 12px;">📋 Copy</button><br>
+                        <strong>Status:</strong> ${jobData.status} ${jobData.success ? '✅' : '❌'}<br>
+                        <strong>Analysis:</strong> ${jobData.analysis_type}<br>
+                        <strong>Duration:</strong> ${jobData.duration ? jobData.duration.toFixed(2) + 's' : 'N/A'}<br>
+                        ${jobData.restored_from_database ? '<em style="color: #666;">📦 Retrieved from database</em><br>' : ''}
+                        ${jobData.restored_files ? `<strong>Files restored:</strong> ${jobData.restored_files.length}<br>` : ''}
+                        ${jobData.expires_at ? `<em style="color: #666;">⏰ Expires: ${new Date(jobData.expires_at).toLocaleString()}</em>` : ''}
+                    `;
+                    
+                    // Show action buttons
+                    document.getElementById('checkStatusBtn').classList.remove('hidden');
+                    
+                    if (jobData.status === 'completed' && jobData.success) {
+                        document.getElementById('downloadBtn').classList.remove('hidden');
+                    }
+                    
+                    // Clear the input
+                    document.getElementById('retrieveJobId').value = '';
+                    
+                } else {
+                    showStatus('error', data.error || 'Failed to retrieve job');
+                }
+            })
+            .catch(error => {
+                console.error('Error retrieving job:', error);
+                showStatus('error', 'Network error while retrieving job');
+            });
+        }
+
+        // Handle Enter key in retrieve job input
+        document.getElementById('retrieveJobId').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                retrieveJob();
+            }
+        });
+
+        // Check URL for job ID parameter on page load
+        function checkUrlForJobId() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const jobId = urlParams.get('job');
+            
+            if (jobId) {
+                document.getElementById('retrieveJobId').value = jobId;
+                retrieveJob();
+            }
+        }
+
+        // Call this when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            checkUrlForJobId();
+        });
+    </script>
+</body>
+</html>
