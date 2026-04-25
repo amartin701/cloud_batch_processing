@@ -10,6 +10,7 @@ import psutil
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pymongo import MongoClient
+import gridfs
 from datetime import datetime, timedelta
 import base64
 import requests
@@ -97,42 +98,109 @@ total_job_time = 0
 total_completed_jobs = 0
 
 def store_job_results(job_id, job_data):
-    """Store job results in MongoDB"""
+    """Store job results in MongoDB using GridFS for large files"""
     if job_results_collection is None:
         logging.warning("MongoDB not available, skipping result storage")
         return False
     
     try:
-        #Encode files as base 64 for storage
+        # Initialize GridFS
+        fs = gridfs.GridFS(mongo_db)
+        
         stored_files = {}
         results_folder = f"/shared/results/{job_id}"
-
+        
+        # File size threshold for GridFS (15MB to stay under 16MB document limit)
+        GRIDFS_THRESHOLD = 15 * 1024 * 1024  # 15MB
+        
+        logging.info(f"*** STORING JOB {job_id} RESULTS ***")
+        
         if os.path.exists(results_folder):
             for filename in os.listdir(results_folder):
                 file_path = os.path.join(results_folder, filename)
                 if os.path.isfile(file_path):
-                    with open(file_path, 'rb') as f:
-                        file_content = f.read()
-                    if filename.endswith(('.txt', '.log', '.summary', '.csv')):
-                        try: 
+                    file_size = os.path.getsize(file_path)
+                    
+                    logging.info(f"   Processing file: {filename} ({file_size:,} bytes)")
+                    
+                    if file_size > GRIDFS_THRESHOLD:
+                        # Store large files in GridFS
+                        logging.info(f"Storing large file {filename} in GridFS")
+                        
+                        with open(file_path, 'rb') as f:
+                            file_id = fs.put(
+                                f,
+                                filename=filename,
+                                job_id=job_id,
+                                upload_date=datetime.utcnow(),
+                                content_type='application/octet-stream'
+                            )
+                        
+                        stored_files[filename] = {
+                            'storage_type': 'gridfs',
+                            'file_id': str(file_id),
+                            'size': file_size,
+                            'filename': filename,
+                            'content_type': 'application/octet-stream'
+                        }
+                        
+                        logging.info(f"Stored in GridFS with ID: {file_id}")
+                        
+                    else:
+                        # Store small files in document
+                        logging.info(f"Storing small file {filename} in document")
+                        
+                        with open(file_path, 'rb') as f:
+                            file_content = f.read()
+                        
+                        # Try to decode as text first
+                        if filename.endswith(('.txt', '.log', '.summary', '.csv', '.tsv')):
+                            try:
+                                stored_files[filename] = {
+                                    'storage_type': 'document',
+                                    'content': file_content.decode('utf-8'),
+                                    'content_type': 'text',
+                                    'size': file_size,
+                                    'filename': filename
+                                }
+                                logging.info(f"Stored as text document")
+                            except UnicodeDecodeError:
+                                # If text decode fails, store as binary
+                                stored_files[filename] = {
+                                    'storage_type': 'document',
+                                    'content': base64.b64encode(file_content).decode('utf-8'),
+                                    'content_type': 'binary',
+                                    'size': file_size,
+                                    'filename': filename
+                                }
+                                logging.info(f"Stored as binary document (base64)")
+                        else:
+                            # Store binary files as base64
                             stored_files[filename] = {
-                                'content': file_content.decode('utf-8'),
-                                'type': 'text',
-                                'size': len(file_content)
-                            }
-
-                        except UnicodeDecodeError:
-                            stored_files[filename] = {
+                                'storage_type': 'document',
                                 'content': base64.b64encode(file_content).decode('utf-8'),
-                                'type': 'binary',
-                                'size': len(file_content)
+                                'content_type': 'binary',
+                                'size': file_size,
+                                'filename': filename
                             }
-                    else: stored_files[filename] = {
-                        'content': base64.b64encode(file_content).decode('utf-8'),
-                        'type': 'binary',
-                        'size': len(file_content)
-                    }
+                            logging.info(f"Stored as binary document (base64)")
         
+        # Calculate total storage size
+        total_document_size = sum(
+            len(f.get('content', '')) for f in stored_files.values() 
+            if f.get('storage_type') == 'document'
+        )
+        total_gridfs_size = sum(
+            f.get('size', 0) for f in stored_files.values() 
+            if f.get('storage_type') == 'gridfs'
+        )
+        
+        logging.info(f"Storage breakdown:")
+        logging.info(f"Document storage: {total_document_size:,} bytes")
+        logging.info(f"GridFS storage: {total_gridfs_size:,} bytes")
+        logging.info(f"Total files: {len(stored_files)}")
+        
+        # Create MongoDB document (metadata only, not file contents for large files)
         mongo_doc = {
             'job_id': job_id,
             'status': job_data.get('status', 'unknown'),
@@ -145,25 +213,51 @@ def store_job_results(job_id, job_data):
             'command': job_data.get('command', ''),
             'uploaded_files': job_data.get('uploaded_files', []),
             'output_files': job_data.get('output_files', []),
-            'stored_files': stored_files,
+            'stored_files': stored_files,  # This contains metadata + small file contents
+            'storage_summary': {
+                'total_files': len(stored_files),
+                'document_files': len([f for f in stored_files.values() if f.get('storage_type') == 'document']),
+                'gridfs_files': len([f for f in stored_files.values() if f.get('storage_type') == 'gridfs']),
+                'total_document_bytes': total_document_size,
+                'total_gridfs_bytes': total_gridfs_size
+            },
             'created_at': datetime.utcnow(),
             'expires_at': datetime.utcnow() + timedelta(minutes=10)
         }
-
-        #Store in MongoDB 
+        
+        # Check document size before storing
+        import json
+        doc_size_estimate = len(json.dumps(mongo_doc, default=str))
+        
+        if doc_size_estimate > 15 * 1024 * 1024:  # 15MB safety margin
+            logging.error(f"Document still too large: {doc_size_estimate:,} bytes")
+            # Move more files to GridFS if needed
+            return False
+        
+        logging.info(f"Document size: {doc_size_estimate:,} bytes (safe for MongoDB)")
+        
+        # Store in MongoDB
         job_results_collection.replace_one(
             {'job_id': job_id},
             mongo_doc,
             upsert=True
         )
-
-        logging.info(f"Stored job {job_id} results in MongoDB")
-        logging.info(f"Stored {len(stored_files)} files totaling {sum(f['size'] for f in stored_files.values())} bytes")
-
+        
+        logging.info(f"   SUCCESSFULLY STORED JOB {job_id}")
+        logging.info(f"   MongoDB document: {doc_size_estimate:,} bytes")
+        logging.info(f"   Small files in document: {len([f for f in stored_files.values() if f.get('storage_type') == 'document'])}")
+        logging.info(f"   Large files in GridFS: {len([f for f in stored_files.values() if f.get('storage_type') == 'gridfs'])}")
+        logging.info(f"   Total storage: {(total_document_size + total_gridfs_size):,} bytes")
+        
         return True
     
+    except gridfs.errors.GridFSError as e:
+        logging.error(f"GridFS error storing job {job_id}: {e}")
+        return False
     except Exception as e:
         logging.error(f"Failed to store job {job_id} in MongoDB: {e}")
+        logging.error(f"   Error type: {type(e).__name__}")
+        return False
 
 
 

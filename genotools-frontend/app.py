@@ -11,11 +11,13 @@ from io import BytesIO
 from werkzeug.utils import secure_filename
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter
 from pymongo import MongoClient
+import gridfs
+from bson import ObjectId
 from datetime import datetime, timedelta
 import base64
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024 * 1024  # 1GB max file size
 logging.basicConfig(level=logging.INFO)
 
 jobs_queued = Counter('frontend_jobs_queued_total', 'Total jobs queued by the frontend')
@@ -75,34 +77,94 @@ def get_job_from_mongodb(job_id):
         return None
 
 def restore_files_from_mongodb(job_id, mongo_doc):
-    """Restore job result files from MongoDB to filesystem for download"""
+    """Restore job result files from MongoDB (both document and GridFS) to filesystem for download"""
     try:
+        import gridfs
+        
         results_folder = os.path.join(RESULTS_FOLDER, job_id)
         os.makedirs(results_folder, exist_ok=True)
+        
+        # Initialize GridFS
+        fs = gridfs.GridFS(mongo_db)
         
         stored_files = mongo_doc.get('stored_files', {})
         restored_files = []
         
+        app.logger.info(f"*** RESTORING {len(stored_files)} FILES FOR JOB {job_id} ***")
+        
         for filename, file_data in stored_files.items():
             file_path = os.path.join(results_folder, filename)
+            storage_type = file_data.get('storage_type', 'document')  # Default to old format
             
-            if file_data['type'] == 'text':
-                # Restore text file
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(file_data['content'])
-            else:
-                # Decode base64 and restore binary file
-                content = base64.b64decode(file_data['content'])
-                with open(file_path, 'wb') as f:
-                    f.write(content)
-            
-            restored_files.append(filename)
+            try:
+                if storage_type == 'gridfs':
+                    # Restore from GridFS
+                    app.logger.info(f"Restoring large file {filename} from GridFS")
+                    
+                    file_id = gridfs.ObjectId(file_data['file_id'])
+                    
+                    # Get file from GridFS and write to filesystem
+                    with open(file_path, 'wb') as f:
+                        gridfs_file = fs.get(file_id)
+                        f.write(gridfs_file.read())
+                    
+                    file_size = os.path.getsize(file_path)
+                    app.logger.info(f"Restored from GridFS: {filename} ({file_size:,} bytes)")
+                    
+                elif storage_type == 'document':
+                    # Restore from document storage
+                    app.logger.info(f"Restoring small file {filename} from document")
+                    
+                    content_type = file_data.get('content_type', 'binary')
+                    content = file_data.get('content', '')
+                    
+                    if content_type == 'text':
+                        # Text file
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                    else:
+                        # Binary file (base64 encoded)
+                        decoded_content = base64.b64decode(content)
+                        with open(file_path, 'wb') as f:
+                            f.write(decoded_content)
+                    
+                    file_size = os.path.getsize(file_path)
+                    app.logger.info(f"Restored from document: {filename} ({file_size:,} bytes)")
+                    
+                else:
+                    # Legacy format (backwards compatibility)
+                    app.logger.info(f"Restoring legacy file {filename}")
+                    
+                    if file_data.get('type') == 'text':
+                        # Legacy text file
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(file_data['content'])
+                    else:
+                        # Legacy binary file
+                        content = base64.b64decode(file_data['content'])
+                        with open(file_path, 'wb') as f:
+                            f.write(content)
+                    
+                    file_size = os.path.getsize(file_path)
+                    app.logger.info(f"Restored legacy file: {filename} ({file_size:,} bytes)")
+                
+                restored_files.append(filename)
+                
+            except gridfs.errors.NoFile:
+                app.logger.error(f"GridFS file not found for {filename} (ID: {file_data.get('file_id')})")
+            except gridfs.errors.GridFSError as e:
+                app.logger.error(f"GridFS error restoring {filename}: {e}")
+            except Exception as e:
+                app.logger.error(f"Failed to restore file {filename}: {e}")
         
-        app.logger.info(f"📦 Restored {len(restored_files)} files for job {job_id}")
+        app.logger.info(f"*** RESTORED {len(restored_files)} FILES FOR JOB {job_id} ***")
+        app.logger.info(f"   Files: {', '.join(restored_files)}")
+        app.logger.info(f"   Location: {results_folder}")
+        
         return restored_files
         
     except Exception as e:
-        app.logger.error(f"❌ Failed to restore files for job {job_id}: {e}")
+        app.logger.error(f"Failed to restore files for job {job_id}: {e}")
         return []
 
 @app.route('/')
@@ -121,6 +183,7 @@ def metrics():
 def upload_files():
     """Upload user files and trigger analysis"""
     try:
+        start_time = datetime.now()
         job_id = str(uuid.uuid4())[:8]
         job_folder = os.path.join('/shared/jobs', job_id)
         os.makedirs(job_folder, exist_ok=True)
@@ -157,7 +220,7 @@ def upload_files():
         }
         
         # Create separate connection for publishing
-        logging.info(f"📤 Publishing job {job_id} to queue...")
+        logging.info(f"Publishing job {job_id} to queue...")
         connection = create_rabbitmq_connection()
         channel = connection.channel()
         channel.queue_declare(queue='genotools-jobs', durable=True)
@@ -171,15 +234,20 @@ def upload_files():
         
         # Close connection immediately after publishing
         connection.close()
-        
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+
         jobs_queued.inc()
-        logging.info(f"✅ Job {job_id} queued for analysis: {analysis_type}")
-        
+        logging.info(f"Job {job_id} queued for analysis: {analysis_type}")
+        logging.info(f"Time taken: {total_duration:.3f} seconds")
+
         return jsonify({
             "success": True,
             "job_id": job_id,
-            "message": "Job queued successfully"
+            "message": "Job queued successfully",
         })
+
+
         
     except Exception as e:
         logging.error(f"Error queuing job: {e}")
@@ -189,21 +257,62 @@ def upload_files():
 def download_results(job_id):
     """Download analysis results as zip file"""
     try:
+        app.logger.info(f"*** DOWNLOAD REQUEST FOR JOB {job_id} ***")
+        
         results_folder = os.path.join(RESULTS_FOLDER, job_id)
         
+        # Check if results folder exists
         if not os.path.exists(results_folder):
-            return jsonify({"error": "Results not found"}), 404
+            app.logger.info(f"Results folder not found, attempting to restore from MongoDB...")
+            
+            # Try to restore from MongoDB first
+            mongo_result = get_job_from_mongodb(job_id)
+            if mongo_result and mongo_result.get('stored_files'):
+                restored_files = restore_files_from_mongodb(job_id, mongo_result)
+                if not restored_files:
+                    app.logger.error(f"Failed to restore files for job {job_id}")
+                    return jsonify({"error": "Results not found and could not be restored"}), 404
+                app.logger.info(f"Restored {len(restored_files)} files from MongoDB")
+            else:
+                app.logger.error(f"Job {job_id} not found in MongoDB either")
+                return jsonify({"error": "Results not found"}), 404
+        
+        # Check if folder has files
+        all_files = []
+        for root, dirs, files in os.walk(results_folder):
+            all_files.extend(files)
+        
+        if not all_files:
+            app.logger.warning(f"Results folder exists but is empty for job {job_id}")
+            return jsonify({"error": "No result files found"}), 404
+        
+        app.logger.info(f"Creating zip file with {len(all_files)} files")
         
         # Create zip file of all results
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            total_size = 0
             for root, dirs, files in os.walk(results_folder):
                 for file in files:
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, results_folder)
-                    zip_file.write(file_path, arcname)
+                    
+                    if os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path)
+                        zip_file.write(file_path, arcname)
+                        total_size += file_size
+                        app.logger.info(f"Added {arcname} ({file_size:,} bytes) to zip")
+                    else:
+                        app.logger.warning(f"File missing during zip creation: {file_path}")
         
         zip_buffer.seek(0)
+        zip_size = len(zip_buffer.getvalue())
+        
+        app.logger.info(f"   *** DOWNLOAD READY FOR JOB {job_id} ***")
+        app.logger.info(f"   Files in zip: {len(all_files)}")
+        app.logger.info(f"   Total file size: {total_size:,} bytes")
+        app.logger.info(f"   Zip file size: {zip_size:,} bytes")
+        app.logger.info(f"   Compression ratio: {((total_size - zip_size) / total_size * 100):.1f}%" if total_size > 0 else "0.0%")
         
         return send_file(
             zip_buffer,
@@ -213,7 +322,7 @@ def download_results(job_id):
         )
         
     except Exception as e:
-        app.logger.error(f"Download error: {e}")
+        app.logger.error(f"Download error for job {job_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/job-status/<job_id>')
@@ -225,23 +334,23 @@ def get_job_status(job_id):
         response = requests.get(f'http://genotools-controller:8080/job-status/{job_id}', timeout=5)
         if response.status_code == 200:
             job_data = response.json()
-            app.logger.info(f"📡 Got live status for job {job_id}: {job_data.get('status')}")
+            app.logger.info(f"Got live status for job {job_id}: {job_data.get('status')}")
             return jsonify(job_data)
         
         # Try the service directly
         response = requests.get(f'http://genotools-service:8080/job-status/{job_id}', timeout=5)
         if response.status_code == 200:
             job_data = response.json()
-            app.logger.info(f"📡 Got live status for job {job_id}: {job_data.get('status')}")
+            app.logger.info(f"Got live status for job {job_id}: {job_data.get('status')}")
             return jsonify(job_data)
             
     except Exception as e:
-        app.logger.info(f"📡 Live services unavailable for job {job_id}: {e}")
+        app.logger.info(f"Live services unavailable for job {job_id}: {e}")
 
     #Try MongoDB 
     mongo_result = get_job_from_mongodb(job_id)
     if mongo_result:
-        app.logger.info(f"📦 Found job {job_id} in MongoDB")
+        app.logger.info(f"Found job {job_id} in MongoDB")
         
         # Restore files to filesystem for download
         restored_files = []
